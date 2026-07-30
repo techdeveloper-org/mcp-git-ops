@@ -22,8 +22,15 @@ from mcp.server.fastmcp import FastMCP
 
 from git import GitCommandError
 
+import hook_shell_fix
+
 from base.decorators import mcp_tool_handler
 from base.clients import GitRepoClient
+
+# Must run before any commit: GitPython spawns Windows hooks as a bare
+# "bash.exe", which CreateProcess resolves from System32 (the WSL stub) before
+# it ever looks at PATH. See hook_shell_fix for the full explanation.
+hook_shell_fix.apply()
 
 mcp = FastMCP("git-ops", instructions="Git operations via GitPython (no subprocess)")
 
