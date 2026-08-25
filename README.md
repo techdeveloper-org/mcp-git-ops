@@ -98,7 +98,8 @@ Optional configuration you may add to the `env` block in `settings.json`:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `GIT_DEFAULT_BRANCH` | `main` | Override the default base branch name used when `from_branch` is not specified |
+| `GIT_DEFAULT_BRANCH` | — | **NOT IMPLEMENTED — read by nothing.** This row previously claimed it would *"override the default base branch name used when `from_branch` is not specified"*. No code consults it: `git_branch_create` declares `from_branch: str = "main"` as a hard-coded literal. On a repository whose base branch is `master`, setting this changes nothing and branch creation still tries to fetch a `main` that does not exist. Pass `from_branch` explicitly. |
+| `GIT_INSTALL_ROOT` | — | Optional. Consulted by `hook_shell_fix.py` (called at import time) when locating the git executable: PATH first, then this, then standard install locations. Useful on Windows when git is not on PATH. |
 
 No tokens or credentials are required. The server uses the Git credential store already configured on the host machine (SSH keys, credential helpers, or HTTPS tokens stored by `git config`).
 
