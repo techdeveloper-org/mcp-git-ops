@@ -2,7 +2,6 @@
 
 ![Python 3.8+](https://img.shields.io/badge/Python-3.8%2B-blue)
 ![License MIT](https://img.shields.io/badge/License-MIT-green)
-![Part of claude-workflow-engine](https://img.shields.io/badge/Part%20of-claude--workflow--engine-blueviolet)
 
 A FastMCP server that exposes structured Git operations to Claude Code via the Model Context Protocol (stdio JSON-RPC). Built on GitPython — no subprocess shell calls, no injection surface.
 
@@ -215,9 +214,11 @@ Response:
 
 ---
 
-## Integration with Claude Workflow Engine
+## Optional: use inside an orchestration pipeline
 
-This server is one of 13 MCP servers in the [claude-workflow-engine](https://github.com/techdeveloper-org/claude-workflow-engine) LangGraph orchestration pipeline. It is called at two specific pipeline steps:
+> **Standalone.** This server has no runtime dependency on any other project. It speaks MCP over stdio and works with any MCP client.
+
+One such client is the [claude-workflow-engine](https://github.com/techdeveloper-org/claude-workflow-engine) LangGraph pipeline, which uses this server among 13 others. Nothing below is required to use the tools on their own. It is called at two specific pipeline steps:
 
 **Step 9 — Branch Creation**
 
@@ -279,7 +280,7 @@ Pull request titles should follow the format: `feat(git-ops): <short description
 
 | Repository | Purpose |
 |------------|---------|
-| [claude-workflow-engine](https://github.com/techdeveloper-org/claude-workflow-engine) | Main LangGraph orchestration pipeline |
+| [claude-workflow-engine](https://github.com/techdeveloper-org/claude-workflow-engine) | One consumer of this server — a LangGraph orchestration pipeline. Not required. |
 | [mcp-base](https://github.com/techdeveloper-org/mcp-base) | Shared base library (MCPResponse, @mcp_tool_handler, AtomicJsonStore) |
 | [mcp-github-api](https://github.com/techdeveloper-org/mcp-github-api) | GitHub PR, issue, merge, and label operations |
 | [mcp-session-mgr](https://github.com/techdeveloper-org/mcp-session-mgr) | Session lifecycle and context persistence |
