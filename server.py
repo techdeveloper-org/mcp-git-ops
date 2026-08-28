@@ -271,10 +271,14 @@ def git_commit(message: str, files: Optional[str] = None, repo_path: str = ".") 
     """
     repo = GitRepoClient.for_path(repo_path)
 
-    # Stage files
+    # Stage files. Uses the `git add` porcelain command (repo.git.add), not
+    # IndexFile.add() -- the low-level index API ignores .gitignore (it will
+    # happily stage an untracked __pycache__/*.pyc that git add would skip)
+    # and raises FileNotFoundError when a listed path no longer exists on
+    # disk, so it cannot stage a deletion. `git add` handles both correctly.
     if files:
         file_list = [f.strip() for f in files.split(",") if f.strip()]
-        repo.index.add(file_list)
+        repo.git.add(*file_list)
     else:
         repo.git.add("-A")
 
