@@ -270,6 +270,7 @@ def git_commit(message: str, files: Optional[str] = None, repo_path: str = ".") 
         repo_path: Repository path
     """
     repo = GitRepoClient.for_path(repo_path)
+    staged_all_changes = not files
 
     # Stage files. Uses the `git add` porcelain command (repo.git.add), not
     # IndexFile.add() -- the low-level index API ignores .gitignore (it will
@@ -289,11 +290,21 @@ def git_commit(message: str, files: Optional[str] = None, repo_path: str = ".") 
     # Commit
     commit = repo.index.commit(message)
 
-    return {
+    # Report what actually landed in the commit, not just the requested
+    # `files` argument -- this is the ground truth for the `git add -A`
+    # path too, so a caller can catch scope creep (e.g. a concurrent
+    # background writer's in-flight edits getting swept into an unrelated
+    # commit) from the response itself, instead of discovering it later
+    # via a separate `git show`.
+    result = {
         "commit_hash": str(commit.hexsha)[:7],
         "message": message,
-        "author": str(commit.author)
+        "author": str(commit.author),
+        "files_committed": sorted(commit.stats.files.keys()),
     }
+    if staged_all_changes:
+        result["staged_all_changes"] = True
+    return result
 
 
 @_tool(read_only=False, destructive=True, idempotent=False, open_world=True)

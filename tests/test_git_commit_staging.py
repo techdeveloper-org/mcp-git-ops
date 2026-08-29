@@ -77,6 +77,38 @@ class TestGitCommitRespectsGitignore:
         assert "notes.pyc.txt" in tracked
 
 
+class TestGitCommitReportsWhatWasCommitted:
+    """Regression coverage for a defect where git_commit(files=None) ran
+    `git add -A` and swept in unrelated concurrent writers' in-flight
+    changes under a commit message describing only the caller's own
+    narrow change -- with nothing in the response to reveal it happened.
+    """
+
+    def test_scoped_commit_reports_exactly_the_requested_files(self, tmp_path, git_repo):
+        (tmp_path / "a.txt").write_text("a\n", encoding="utf-8")
+        (tmp_path / "b.txt").write_text("b\n", encoding="utf-8")
+
+        result = _commit(tmp_path, "add a and b", files="a.txt,b.txt")
+
+        assert result.get("success", True), result
+        assert set(result["files_committed"]) == {"a.txt", "b.txt"}
+        assert "staged_all_changes" not in result
+
+    def test_stage_all_commit_reports_every_file_it_actually_staged(self, tmp_path, git_repo):
+        (tmp_path / "unrelated.txt").write_text("unrelated\n", encoding="utf-8")
+        (tmp_path / "intended.txt").write_text("intended\n", encoding="utf-8")
+
+        result = _commit(tmp_path, "intended change only", files=None)
+
+        assert result.get("success", True), result
+        assert result["staged_all_changes"] is True
+        assert set(result["files_committed"]) == {"unrelated.txt", "intended.txt"}, (
+            "files_committed must reflect everything git add -A actually staged, "
+            "not just the files the caller meant to change -- this is what makes "
+            "scope creep from a git add -A commit visible in the response itself"
+        )
+
+
 class TestGitCommitStagesDeletions:
     def test_deleted_file_is_committed_as_a_removal(self, tmp_path, git_repo):
         target = tmp_path / "scratch.txt"
