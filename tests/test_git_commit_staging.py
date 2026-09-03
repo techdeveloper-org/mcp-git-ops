@@ -109,6 +109,43 @@ class TestGitCommitReportsWhatWasCommitted:
         )
 
 
+class TestGitCommitOnUnbornHead:
+    """Regression coverage for a defect where git_commit (and git_status)
+    raised gitdb.exc.BadName -- surfaced to callers as "Ref 'HEAD' did not
+    resolve to an object" -- on a freshly `git init`-ed repo that has no
+    commits yet. `repo.index.diff("HEAD")` requires HEAD to resolve to a
+    real commit; on an unborn branch it does not, so the very first commit
+    in any repo could never be made through this tool.
+    """
+
+    def test_first_commit_ever_succeeds_on_freshly_initialized_repo(self, tmp_path):
+        repo = Repo.init(tmp_path)
+        with repo.config_writer() as cfg:
+            cfg.set_value("user", "name", "Test User")
+            cfg.set_value("user", "email", "test@example.com")
+        (tmp_path / "README.md").write_text("hello\n", encoding="utf-8")
+
+        result = _commit(tmp_path, "initial commit", files=None)
+
+        assert result.get("success", True), result
+        assert result.get("message") != "No changes to commit", result
+        assert "README.md" in set(result.get("files_committed", [])), result
+        assert repo.head.is_valid()
+
+    def test_second_call_on_unborn_head_with_nothing_new_reports_no_changes(self, tmp_path):
+        repo = Repo.init(tmp_path)
+        with repo.config_writer() as cfg:
+            cfg.set_value("user", "name", "Test User")
+            cfg.set_value("user", "email", "test@example.com")
+        (tmp_path / "README.md").write_text("hello\n", encoding="utf-8")
+        first = _commit(tmp_path, "initial commit", files=None)
+        assert first.get("success", True), first
+
+        second = _commit(tmp_path, "nothing changed", files=None)
+
+        assert second.get("message") == "No changes to commit", second
+
+
 class TestGitCommitStagesDeletions:
     def test_deleted_file_is_committed_as_a_removal(self, tmp_path, git_repo):
         target = tmp_path / "scratch.txt"

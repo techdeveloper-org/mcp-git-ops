@@ -32,6 +32,7 @@ except ImportError:  # pragma: no cover - annotations unsupported on this mcp
     ToolAnnotations = None
 
 from git import GitCommandError
+from git.exc import BadName
 
 import hook_shell_fix
 
@@ -123,7 +124,14 @@ def git_status(repo_path: str = ".") -> dict:
     """Get repository status (modified, staged, untracked files)."""
     repo = GitRepoClient.for_path(repo_path)
     changed = [item.a_path for item in repo.index.diff(None)]
-    staged = [item.a_path for item in repo.index.diff("HEAD")]
+    try:
+        staged = [item.a_path for item in repo.index.diff("HEAD")]
+    except BadName:
+        # Unborn HEAD: no commit exists yet (fresh `git init`, before the
+        # first commit), so there is no tree to diff the index against.
+        # Everything currently in the index counts as staged relative to
+        # the implicit empty tree.
+        staged = sorted({path for (path, _stage) in repo.index.entries.keys()})
     untracked = repo.untracked_files
 
     return {
@@ -283,8 +291,16 @@ def git_commit(message: str, files: Optional[str] = None, repo_path: str = ".") 
     else:
         repo.git.add("-A")
 
-    # Check if there are staged changes
-    if not repo.index.diff("HEAD") and not repo.untracked_files:
+    # Check if there are staged changes. repo.index.diff("HEAD") raises
+    # BadName when HEAD is unborn -- the very first commit in a repo, before
+    # any commit exists yet (fresh `git init`) -- because there is no HEAD
+    # tree to diff the index against. Fall back to checking whether the
+    # index has any entries at all in that case.
+    try:
+        has_staged_diff = bool(repo.index.diff("HEAD"))
+    except BadName:
+        has_staged_diff = bool(repo.index.entries)
+    if not has_staged_diff and not repo.untracked_files:
         return {"message": "No changes to commit"}
 
     # Commit
