@@ -287,6 +287,17 @@ def git_commit(message: str, files: Optional[str] = None, repo_path: str = ".") 
     # disk, so it cannot stage a deletion. `git add` handles both correctly.
     if files:
         file_list = [f.strip() for f in files.split(",") if f.strip()]
+        # `files` must be exclusive, not additive: reset the index to HEAD
+        # first (working tree untouched) so anything already staged from
+        # an earlier `git add` or `git reset --soft` doesn't ride along
+        # into this commit alongside the caller's named files. Without
+        # this, a caller has no way to make a truly scoped commit if
+        # anything else happens to be staged (#11).
+        try:
+            repo.git.reset("HEAD", "--")
+        except GitCommandError:
+            # HEAD is unborn (first commit ever) - nothing to reset from.
+            pass
         repo.git.add(*file_list)
     else:
         repo.git.add("-A")
@@ -383,32 +394,70 @@ def git_pull(branch: Optional[str] = None, repo_path: str = ".") -> dict:
     }
 
 
+def _diff_target_args(commit: Optional[str], from_ref: Optional[str], staged: bool) -> list:
+    """Build the positional args ``git diff`` needs to select its comparison.
+
+    Precedence is commit > from_ref > staged > working tree, matching the
+    order git_diff itself documents and checks in.
+
+    Args:
+        commit: A single commit to diff against its first parent, or None.
+        from_ref: A ref to diff against HEAD, or None.
+        staged: Whether to diff the index against HEAD.
+
+    Returns:
+        Positional arguments for ``repo.git.diff(*args)``, before any
+        ``--stat`` flag is appended.
+    """
+    if commit:
+        return [f"{commit}^", commit]
+    if from_ref:
+        return [from_ref, "HEAD"]
+    if staged:
+        return ["--cached"]
+    return []
+
+
 @_tool(read_only=True, destructive=False, idempotent=True, open_world=False)
 @mcp_tool_handler
-def git_diff(staged: bool = False, from_ref: Optional[str] = None, repo_path: str = ".") -> dict:
+def git_diff(
+    staged: bool = False,
+    from_ref: Optional[str] = None,
+    commit: Optional[str] = None,
+    full: bool = False,
+    repo_path: str = ".",
+) -> dict:
     """Get diff output.
 
     Args:
         staged: If True, show staged changes (--cached)
-        from_ref: Compare against this ref (e.g., 'main')
+        from_ref: Compare this ref against HEAD (e.g., 'main')
+        commit: Show one commit's own changes -- the diff between it and its
+            first parent, like ``git show <commit>`` without the message.
+            Takes precedence over from_ref and staged when given.
+        full: If True, also return the actual patch text in ``diff``, not
+            just the ``--stat`` summary. Full patches can be large, so this
+            defaults to False.
         repo_path: Repository path
     """
     if from_ref:
         from_ref = _safe_ref(from_ref, "from_ref")
+    if commit:
+        commit = _safe_ref(commit, "commit")
     repo = GitRepoClient.for_path(repo_path)
 
-    if from_ref:
-        diff_text = repo.git.diff(from_ref, "HEAD", "--stat")
-    elif staged:
-        diff_text = repo.git.diff("--cached", "--stat")
-    else:
-        diff_text = repo.git.diff("--stat")
+    target_args = _diff_target_args(commit, from_ref, staged)
+    diff_summary = repo.git.diff(*target_args, "--stat")
 
-    return {
-        "diff_summary": diff_text,
+    result = {
+        "diff_summary": diff_summary,
         "staged": staged,
-        "from_ref": from_ref
+        "from_ref": from_ref,
+        "commit": commit,
     }
+    if full:
+        result["diff"] = repo.git.diff(*target_args)
+    return result
 
 
 @_tool(read_only=False, destructive=True, idempotent=False, open_world=False)
