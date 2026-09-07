@@ -287,6 +287,17 @@ def git_commit(message: str, files: Optional[str] = None, repo_path: str = ".") 
     # disk, so it cannot stage a deletion. `git add` handles both correctly.
     if files:
         file_list = [f.strip() for f in files.split(",") if f.strip()]
+        # `files` must be exclusive, not additive: reset the index to HEAD
+        # first (working tree untouched) so anything already staged from
+        # an earlier `git add` or `git reset --soft` doesn't ride along
+        # into this commit alongside the caller's named files. Without
+        # this, a caller has no way to make a truly scoped commit if
+        # anything else happens to be staged (#11).
+        try:
+            repo.git.reset("HEAD", "--")
+        except GitCommandError:
+            # HEAD is unborn (first commit ever) - nothing to reset from.
+            pass
         repo.git.add(*file_list)
     else:
         repo.git.add("-A")

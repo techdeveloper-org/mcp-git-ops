@@ -146,6 +146,65 @@ class TestGitCommitOnUnbornHead:
         assert second.get("message") == "No changes to commit", second
 
 
+class TestGitCommitFilesParamIsExclusive:
+    """Regression coverage for #11: `files` must be exclusive, not additive.
+
+    If a caller (or an earlier `git add` / `git reset --soft` in the same
+    session) has already staged a file that isn't named in `files`, a
+    scoped git_commit(files=...) call must not silently absorb it into
+    the commit. The old behavior ran a bare `git add <files>` on top of
+    whatever the index already held, so an unrelated staged file rode
+    along into a commit whose message described only the caller's
+    intended, narrower change.
+    """
+
+    def test_previously_staged_file_is_excluded_from_a_scoped_commit(self, tmp_path, git_repo):
+        (tmp_path / "already_staged.txt").write_text("leftover\n", encoding="utf-8")
+        (tmp_path / "intended.txt").write_text("the actual change\n", encoding="utf-8")
+
+        # Simulate a prior `git add` (or a `git reset --soft` that left a
+        # previous commit's file staged) before the scoped call under test.
+        git_repo.git.add("already_staged.txt")
+
+        result = _commit(tmp_path, "intended change only", files="intended.txt")
+
+        assert result.get("success", True), result
+        assert set(result["files_committed"]) == {"intended.txt"}, (
+            "a file staged before the scoped git_commit call must not be "
+            f"swept into it: {result}"
+        )
+        tracked_at_head = set(git_repo.git.show("--name-only", "--format=", "HEAD").splitlines())
+        assert "already_staged.txt" not in tracked_at_head
+        assert "intended.txt" in tracked_at_head
+        # The unrelated file's content must survive in the working tree --
+        # excluding it from the commit must not discard the caller's other
+        # in-progress work, only leave it uncommitted. It ends up unstaged
+        # (not staged), the same state `git restore --staged` produces --
+        # this is the simplest, most predictable outcome: everything not
+        # named in `files` is simply untouched by this commit.
+        assert (tmp_path / "already_staged.txt").read_text(encoding="utf-8") == "leftover\n"
+        assert "already_staged.txt" in set(git_repo.untracked_files), (
+            "was never in HEAD, so unstaging it must return it to untracked, "
+            "not silently drop its content"
+        )
+
+    def test_files_param_on_unborn_head_still_works(self, tmp_path):
+        """The reset-to-HEAD fix must not break the very first commit ever,
+        where there is no HEAD to reset to (see TestGitCommitOnUnbornHead).
+        """
+        repo = Repo.init(tmp_path)
+        with repo.config_writer() as cfg:
+            cfg.set_value("user", "name", "Test User")
+            cfg.set_value("user", "email", "test@example.com")
+        (tmp_path / "README.md").write_text("hello\n", encoding="utf-8")
+
+        result = _commit(tmp_path, "initial commit", files="README.md")
+
+        assert result.get("success", True), result
+        assert set(result.get("files_committed", [])) == {"README.md"}, result
+        assert repo.head.is_valid()
+
+
 class TestGitCommitStagesDeletions:
     def test_deleted_file_is_committed_as_a_removal(self, tmp_path, git_repo):
         target = tmp_path / "scratch.txt"
