@@ -135,6 +135,7 @@ def git_status(repo_path: str = ".") -> dict:
     untracked = repo.untracked_files
 
     return {
+        "repo_path": str(repo.working_dir),
         "branch": str(repo.active_branch),
         "is_dirty": repo.is_dirty(untracked_files=True),
         "modified": changed,
@@ -201,6 +202,7 @@ def git_branch_create(name: str, from_branch: str = "main", repo_path: str = "."
         push_error = str(exc)[:300]
 
     result = {
+        "repo_path": str(repo.working_dir),
         "branch": name,
         "from": from_branch,
         "had_stash": had_stash,
@@ -225,7 +227,7 @@ def git_branch_switch(name: str, repo_path: str = ".") -> dict:
     name = _safe_ref(name, "name")
     repo = GitRepoClient.for_path(repo_path)
     repo.git.checkout(name)
-    return {"branch": name}
+    return {"repo_path": str(repo.working_dir), "branch": name}
 
 
 @_tool(read_only=True, destructive=False, idempotent=True, open_world=False)
@@ -241,6 +243,7 @@ def git_branch_list(repo_path: str = ".") -> dict:
             remote.append(str(ref))
 
     return {
+        "repo_path": str(repo.working_dir),
         "current": current,
         "local": local,
         "remote": remote
@@ -264,7 +267,7 @@ def git_branch_delete(name: str, force: bool = False, repo_path: str = ".") -> d
     repo = GitRepoClient.for_path(repo_path)
     flag = "-D" if force else "-d"
     repo.git.branch(flag, name)
-    return {"deleted": name, "force": force}
+    return {"repo_path": str(repo.working_dir), "deleted": name, "force": force}
 
 
 @_tool(read_only=False, destructive=False, idempotent=False, open_world=False)
@@ -312,7 +315,7 @@ def git_commit(message: str, files: Optional[str] = None, repo_path: str = ".") 
     except BadName:
         has_staged_diff = bool(repo.index.entries)
     if not has_staged_diff and not repo.untracked_files:
-        return {"message": "No changes to commit"}
+        return {"repo_path": str(repo.working_dir), "message": "No changes to commit"}
 
     # Commit
     commit = repo.index.commit(message)
@@ -324,6 +327,7 @@ def git_commit(message: str, files: Optional[str] = None, repo_path: str = ".") 
     # commit) from the response itself, instead of discovering it later
     # via a separate `git show`.
     result = {
+        "repo_path": str(repo.working_dir),
         "commit_hash": str(commit.hexsha)[:7],
         "message": message,
         "author": str(commit.author),
@@ -369,6 +373,7 @@ def git_push(
     origin.push(push_branch, **kwargs)
 
     return {
+        "repo_path": str(repo.working_dir),
         "branch": push_branch,
         "remote": "origin",
         "force": force
@@ -389,6 +394,7 @@ def git_pull(branch: Optional[str] = None, repo_path: str = ".") -> dict:
     flags = [info.flags for info in result]
 
     return {
+        "repo_path": str(repo.working_dir),
         "branch": pull_branch,
         "flags": flags
     }
@@ -450,6 +456,7 @@ def git_diff(
     diff_summary = repo.git.diff(*target_args, "--stat")
 
     result = {
+        "repo_path": str(repo.working_dir),
         "diff_summary": diff_summary,
         "staged": staged,
         "from_ref": from_ref,
@@ -485,9 +492,9 @@ def git_stash(action: str = "push", message: Optional[str] = None, repo_path: st
         except GitCommandError as e:
             error_msg = str(e)
             if "No local changes" in error_msg or "No stash entries" in error_msg:
-                return {"action": action, "result": "Nothing to stash/pop"}
+                return {"repo_path": str(repo.working_dir), "action": action, "result": "Nothing to stash/pop"}
             raise
-        return {"action": "push", "result": result}
+        return {"repo_path": str(repo.working_dir), "action": "push", "result": result}
 
     elif action == "pop":
         try:
@@ -495,14 +502,14 @@ def git_stash(action: str = "push", message: Optional[str] = None, repo_path: st
         except GitCommandError as e:
             error_msg = str(e)
             if "No local changes" in error_msg or "No stash entries" in error_msg:
-                return {"action": action, "result": "Nothing to stash/pop"}
+                return {"repo_path": str(repo.working_dir), "action": action, "result": "Nothing to stash/pop"}
             raise
-        return {"action": "pop", "result": result}
+        return {"repo_path": str(repo.working_dir), "action": "pop", "result": result}
 
     elif action == "list":
         result = repo.git.stash("list")
         stashes = [line for line in result.split("\n") if line]
-        return {"action": "list", "stashes": stashes}
+        return {"repo_path": str(repo.working_dir), "action": "list", "stashes": stashes}
 
     else:
         raise ValueError(f"Unknown stash action: {action}")
@@ -528,6 +535,7 @@ def git_log(count: int = 10, repo_path: str = ".") -> dict:
         })
 
     return {
+        "repo_path": str(repo.working_dir),
         "commits": commits,
         "count": len(commits),
         "current_branch": str(repo.active_branch)
@@ -563,6 +571,7 @@ def git_fetch(remote: str = "origin", branch: Optional[str] = None, prune: bool 
     fetched = [str(info.ref) for info in result]
 
     return {
+        "repo_path": str(repo.working_dir),
         "remote": remote,
         "fetched_refs": fetched,
         "pruned": prune
@@ -623,6 +632,7 @@ def git_post_merge_cleanup(
     origin.fetch(prune=True)
 
     result = {
+        "repo_path": str(repo.working_dir),
         "cleaned_branch": merged_branch,
         "current_branch": main_branch,
         "branch_deleted": branch_deleted,
@@ -643,6 +653,7 @@ def git_get_origin_url(repo_path: str = ".") -> dict:
     repo = GitRepoClient.for_path(repo_path)
     url = repo.remotes.origin.url
     return {
+        "repo_path": str(repo.working_dir),
         "origin_url": url,
         "is_github": "github.com" in url
     }
