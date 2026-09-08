@@ -268,6 +268,30 @@ class GitRepoClient(LazyClient):
 
         # Specific path (not cached)
         repo = GitRepoClient.for_path("/path/to/repo")
+
+    WARNING -- what ``repo_path="."`` actually resolves to:
+    This MCP server is a single long-running process with a fixed working
+    directory, set once at process launch. GitPython's ``Repo(".")`` resolves
+    relative to *that* process's cwd, not the cwd of whichever Claude Code
+    agent/session happens to be calling this tool right now -- the MCP
+    protocol carries no per-call caller-cwd. In a normal single-checkout
+    session this coincides with the repo you mean, so the default is
+    convenient and safe. It stops being safe the moment more than one
+    checkout of the same repo exists concurrently -- most commonly a `git
+    worktree` used to isolate a subagent's changes -- because every call
+    that omits ``repo_path`` still lands on the server's one fixed checkout,
+    silently switching its branch / staging its changes / stashing its
+    dirty state instead of the caller's own worktree. Confirmed in practice
+    2026-09-08: parallel worktree subagents on techdeveloper-org/
+    youtube-monetization-tool omitted repo_path, and their `git_branch_create`/
+    `git_commit` calls repeatedly checked out branches and left uncommitted
+    diffs in the *main* checkout instead of their own worktree -- each tool's
+    returned `repo_path` field showed the mismatch, but nothing prevented
+    the operation itself from running against the wrong directory first.
+    ALWAYS pass repo_path as an absolute path when more than one checkout
+    of the repo could exist (worktrees, parallel clones, CI runners sharing
+    a host) -- do not rely on the default outside a genuine single-checkout
+    session.
     """
 
     _repo_path = "."
@@ -280,7 +304,11 @@ class GitRepoClient(LazyClient):
         Use this for tools that need to operate on different repositories.
 
         Args:
-            repo_path: Filesystem path to the git repository root.
+            repo_path: Filesystem path to the git repository root. Defaults
+                to ``"."``, which resolves relative to *this MCP server
+                process's* working directory -- not the calling agent's.
+                See the class docstring's WARNING before relying on the
+                default in any multi-checkout (e.g. git-worktree) setup.
 
         Returns:
             A ``git.Repo`` instance.

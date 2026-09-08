@@ -9,6 +9,18 @@ Tools (14):
   git_status, git_branch_create, git_branch_switch, git_branch_list,
   git_branch_delete, git_commit, git_push, git_pull, git_diff,
   git_stash, git_log, git_fetch, git_post_merge_cleanup, git_get_origin_url
+
+WARNING -- every tool's ``repo_path`` defaults to ``"."``, which resolves
+relative to THIS SERVER PROCESS's own working directory (fixed once at
+launch), never the calling agent's. That's fine in a normal single-checkout
+session. It is NOT fine the moment more than one checkout of the same repo
+exists at once -- most commonly a `git worktree` used to isolate a
+subagent's changes -- because every call that omits repo_path still lands
+on this server's one fixed checkout, silently switching its branch or
+staging/stashing its state instead of the caller's own worktree. See
+GitRepoClient's docstring in base/clients.py for a real incident writeup.
+ALWAYS pass repo_path as an absolute path whenever multiple checkouts of
+the repo could exist concurrently.
 """
 
 import sys
@@ -160,7 +172,12 @@ def git_branch_create(name: str, from_branch: str = "main", repo_path: str = "."
     Args:
         name: Name of the branch to create.
         from_branch: Base branch to fetch and branch from.
-        repo_path: Repository path.
+        repo_path: Repository path. Defaults to "." (this server process's
+            own cwd, NOT the caller's) -- pass an absolute path explicitly
+            whenever a git worktree or other second checkout of this repo
+            could exist. See module docstring WARNING. Getting this wrong
+            here is worse than on a read-only tool: this call stashes,
+            checks out, and pops against whatever repo_path resolves to.
 
     Returns:
         Dict with branch, from, stash_restored, pushed, and any
@@ -223,7 +240,12 @@ def git_branch_create(name: str, from_branch: str = "main", repo_path: str = "."
 @_tool(read_only=False, destructive=False, idempotent=True, open_world=False)
 @mcp_tool_handler
 def git_branch_switch(name: str, repo_path: str = ".") -> dict:
-    """Switch to an existing branch."""
+    """Switch to an existing branch.
+
+    repo_path defaults to "." (this server's own cwd, not the caller's) --
+    pass it explicitly in any multi-checkout / git-worktree setup. See
+    module docstring WARNING.
+    """
     name = _safe_ref(name, "name")
     repo = GitRepoClient.for_path(repo_path)
     repo.git.checkout(name)
@@ -278,7 +300,11 @@ def git_commit(message: str, files: Optional[str] = None, repo_path: str = ".") 
     Args:
         message: Commit message (can be multi-line)
         files: Comma-separated file paths to stage. If empty, stages all changes.
-        repo_path: Repository path
+        repo_path: Repository path. Defaults to "." (this server process's
+            own cwd, NOT the caller's) -- pass an absolute path explicitly
+            in any git-worktree or multi-checkout setup, or this stages and
+            commits against the wrong working directory. See module
+            docstring WARNING.
     """
     repo = GitRepoClient.for_path(repo_path)
     staged_all_changes = not files
@@ -356,7 +382,10 @@ def git_push(
         branch: Branch to push (current if None)
         set_upstream: Set upstream tracking
         force: Force push (use with caution)
-        repo_path: Repository path
+        repo_path: Repository path. Defaults to "." (this server process's
+            own cwd, NOT the caller's) -- pass an absolute path explicitly
+            in any git-worktree or multi-checkout setup. See module
+            docstring WARNING.
     """
     if branch is not None:
         branch = _safe_ref(branch, "branch")
