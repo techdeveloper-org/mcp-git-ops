@@ -79,6 +79,21 @@ mcp = MCPServer("git-ops", instructions="Git operations via GitPython (no subpro
 # clear timeout error instead of an indefinite freeze.
 _NETWORK_TIMEOUT_SECONDS = 60
 
+# GitPython's kill_after_timeout implements the timeout by starting a
+# background thread that SIGKILLs the git subprocess after the deadline.
+# That mechanism is POSIX-only -- GitPython raises
+# "'kill_after_timeout' feature is not supported on Windows" the moment the
+# kwarg is passed on os.name == "nt", turning every fetch/push/pull call
+# above into a hard failure on Windows regardless of network conditions.
+# _network_timeout_kwargs() is the single source of truth for this kwarg:
+# it degrades to no timeout on Windows (a hang there is at least visible to
+# the user as a stuck process, whereas the exception above hard-fails every
+# single call) and keeps the GH-16 protection on POSIX where it works.
+def _network_timeout_kwargs() -> dict:
+    if os.name == "nt":
+        return {}
+    return {"kill_after_timeout": _NETWORK_TIMEOUT_SECONDS}
+
 
 def _tool(read_only=False, destructive=True, idempotent=False, open_world=True):
     """Register a tool with explicit MCP ToolAnnotations.
@@ -215,7 +230,7 @@ def git_branch_create(name: str, from_branch: str = "main", repo_path: str = "."
         had_stash = True
 
     try:
-        origin.fetch(from_branch, kill_after_timeout=_NETWORK_TIMEOUT_SECONDS)
+        origin.fetch(from_branch, **_network_timeout_kwargs())
         base_ref = "FETCH_HEAD"
     except GitCommandError:
         base_ref = from_branch
@@ -234,7 +249,7 @@ def git_branch_create(name: str, from_branch: str = "main", repo_path: str = "."
     pushed = False
     push_error = None
     try:
-        origin.push(name, set_upstream=True, kill_after_timeout=_NETWORK_TIMEOUT_SECONDS)
+        origin.push(name, set_upstream=True, **_network_timeout_kwargs())
         pushed = True
     except GitCommandError as exc:
         push_error = str(exc)[:300]
@@ -420,7 +435,7 @@ def git_push(
     if force:
         kwargs["force"] = True
 
-    kwargs["kill_after_timeout"] = _NETWORK_TIMEOUT_SECONDS
+    kwargs.update(_network_timeout_kwargs())
     origin.push(push_branch, **kwargs)
 
     return {
@@ -441,7 +456,7 @@ def git_pull(branch: Optional[str] = None, repo_path: str = ".") -> dict:
     origin = repo.remotes.origin
     pull_branch = branch or str(repo.active_branch)
 
-    result = origin.pull(pull_branch, kill_after_timeout=_NETWORK_TIMEOUT_SECONDS)
+    result = origin.pull(pull_branch, **_network_timeout_kwargs())
     flags = [info.flags for info in result]
 
     return {
@@ -697,7 +712,7 @@ def git_fetch(remote: str = "origin", branch: Optional[str] = None, prune: bool 
     repo = GitRepoClient.for_path(repo_path)
     remote_obj = repo.remote(remote)
 
-    kwargs = {"kill_after_timeout": _NETWORK_TIMEOUT_SECONDS}
+    kwargs = _network_timeout_kwargs()
     if prune:
         kwargs["prune"] = True
 
@@ -752,7 +767,7 @@ def git_post_merge_cleanup(
     origin = repo.remotes.origin
 
     repo.git.checkout(main_branch)
-    origin.pull(main_branch, kill_after_timeout=_NETWORK_TIMEOUT_SECONDS)
+    origin.pull(main_branch, **_network_timeout_kwargs())
 
     branch_deleted = False
     branch_delete_error = None
@@ -767,7 +782,7 @@ def git_post_merge_cleanup(
             except GitCommandError as exc:
                 branch_delete_error = str(exc)[:300]
 
-    origin.fetch(prune=True, kill_after_timeout=_NETWORK_TIMEOUT_SECONDS)
+    origin.fetch(prune=True, **_network_timeout_kwargs())
 
     result = {
         "repo_path": str(repo.working_dir),
