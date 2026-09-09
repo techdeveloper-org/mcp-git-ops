@@ -429,6 +429,93 @@ def git_pull(branch: Optional[str] = None, repo_path: str = ".") -> dict:
     }
 
 
+@_tool(read_only=False, destructive=False, idempotent=False, open_world=True)
+@mcp_tool_handler
+def git_merge(
+    source: str,
+    message: Optional[str] = None,
+    squash: bool = True,
+    repo_path: str = "."
+) -> dict:
+    """Merge a source branch or ref into the current branch.
+
+    Added because ``github_merge_pr`` (mcp-github-api) has no local fallback
+    when GitHub's own mergeability computation stalls -- observed live
+    2026-09-09 (a PR sat at ``mergeable: null`` for several minutes while two
+    sibling PRs against the same repo merged cleanly seconds apart), and
+    that server deliberately refuses to guess in that state rather than
+    risk merging something GitHub has not actually validated. This tool
+    lets the caller merge the same already-reviewed branch locally and push
+    it, without reaching for raw ``git`` via a shell (see this module's
+    header comment on why ``repo_path`` must be explicit and why this
+    server exists at all).
+
+    ``squash=True`` (the default) matches this project's own convention of
+    squash-merging PRs via ``github_merge_pr``'s default ``method="squash"``
+    -- one commit on the target branch per source branch, regardless of how
+    many commits the source branch accumulated. ``squash=False`` performs an
+    ordinary merge commit (``--no-ff``), preserving the source branch's own
+    commit history.
+
+    Args:
+        source: Branch or ref to merge into the current branch. Must already
+            be available locally -- run git_fetch first if it only exists on
+            the remote.
+        message: Commit message. Required when squash=True (squash merges do
+            not get an automatic message from git the way merge commits do).
+            Ignored when squash=False and a fast-forward merge is possible;
+            used as the merge commit message otherwise.
+        squash: Squash all of source's commits into one commit on the
+            current branch (default True). False performs a --no-ff merge
+            commit, preserving source's own commit history.
+        repo_path: Repository path. Defaults to "." (this server process's
+            own cwd, NOT the caller's) -- pass an absolute path explicitly
+            in any git-worktree or multi-checkout setup, or this merges
+            into the wrong working directory. See module docstring WARNING.
+
+    Returns:
+        Dict with repo_path, source, target branch, squash, and
+        commit_hash of the resulting commit (the new squash commit, or the
+        merge commit -- never the fast-forwarded tip's original hash if one
+        already existed under a different name, since a fast-forward does
+        not create a new commit).
+
+    Raises:
+        ValueError: If squash=True and message is not provided, or source
+            fails ref-safety validation (see _safe_ref).
+        GitCommandError: If the merge conflicts. The working tree is left
+            in the conflicted state for manual resolution -- this tool does
+            not attempt to auto-resolve or abort on conflict, since guessing
+            a resolution is exactly the kind of silent behavior this
+            module's callers must never rely on.
+    """
+    source = _safe_ref(source, "source")
+    if squash and not message:
+        raise ValueError("message is required when squash=True")
+
+    repo = GitRepoClient.for_path(repo_path)
+    target_branch = str(repo.active_branch)
+
+    if squash:
+        repo.git.merge("--squash", source)
+        commit = repo.index.commit(message)
+        commit_hash = str(commit.hexsha)[:7]
+    else:
+        merge_args = ["--no-ff", source]
+        if message:
+            merge_args = ["--no-ff", "-m", message, source]
+        repo.git.merge(*merge_args)
+        commit_hash = str(repo.head.commit.hexsha)[:7]
+
+    return {
+        "repo_path": str(repo.working_dir),
+        "source": source,
+        "target": target_branch,
+        "squash": squash,
+        "commit_hash": commit_hash,
+    }
+
+
 def _diff_target_args(commit: Optional[str], from_ref: Optional[str], staged: bool) -> list:
     """Build the positional args ``git diff`` needs to select its comparison.
 
