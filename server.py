@@ -23,12 +23,24 @@ ALWAYS pass repo_path as an absolute path whenever multiple checkouts of
 the repo could exist concurrently.
 """
 
+import os
 import sys
 from pathlib import Path
 from typing import Optional
 
 # Ensure src/mcp/ is in path for base package imports
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+# GH-16: without this, a git subprocess that prompts for credentials over a
+# plain terminal (SSH host-key confirmation, HTTPS basic-auth prompt on a
+# machine without a GUI credential helper) blocks forever on stdin -- which
+# this server never supplies interactively, since its own stdin carries the
+# MCP protocol. Failing fast here turns an indefinite hang into an immediate,
+# reportable git error. This does NOT cover GUI credential helpers (Git
+# Credential Manager on Windows, osxkeychain prompts) -- those bypass the
+# terminal entirely, which is why every network call below also carries an
+# explicit kill_after_timeout.
+os.environ.setdefault("GIT_TERMINAL_PROMPT", "0")
 
 # mcp 2.0 renamed FastMCP to MCPServer and moved it to mcp.server.mcpserver.
 # Both names are probed so this server runs under either major version; the
@@ -57,6 +69,15 @@ from base.clients import GitRepoClient
 hook_shell_fix.apply()
 
 mcp = MCPServer("git-ops", instructions="Git operations via GitPython (no subprocess)")
+
+# GH-16: applied to every Remote.fetch()/push()/pull() call. This server
+# handles one tool call at a time (stdio, synchronous), so an untimed-out
+# subprocess -- most commonly a GUI credential-manager prompt nothing in
+# this flow can answer -- freezes every queued tool call behind it, which
+# looks to the caller like the whole MCP connection died. 60s is generous
+# for a real network round-trip and short enough that a hang surfaces as a
+# clear timeout error instead of an indefinite freeze.
+_NETWORK_TIMEOUT_SECONDS = 60
 
 
 def _tool(read_only=False, destructive=True, idempotent=False, open_world=True):
@@ -194,7 +215,7 @@ def git_branch_create(name: str, from_branch: str = "main", repo_path: str = "."
         had_stash = True
 
     try:
-        origin.fetch(from_branch)
+        origin.fetch(from_branch, kill_after_timeout=_NETWORK_TIMEOUT_SECONDS)
         base_ref = "FETCH_HEAD"
     except GitCommandError:
         base_ref = from_branch
@@ -213,7 +234,7 @@ def git_branch_create(name: str, from_branch: str = "main", repo_path: str = "."
     pushed = False
     push_error = None
     try:
-        origin.push(name, set_upstream=True)
+        origin.push(name, set_upstream=True, kill_after_timeout=_NETWORK_TIMEOUT_SECONDS)
         pushed = True
     except GitCommandError as exc:
         push_error = str(exc)[:300]
@@ -399,6 +420,7 @@ def git_push(
     if force:
         kwargs["force"] = True
 
+    kwargs["kill_after_timeout"] = _NETWORK_TIMEOUT_SECONDS
     origin.push(push_branch, **kwargs)
 
     return {
@@ -419,7 +441,7 @@ def git_pull(branch: Optional[str] = None, repo_path: str = ".") -> dict:
     origin = repo.remotes.origin
     pull_branch = branch or str(repo.active_branch)
 
-    result = origin.pull(pull_branch)
+    result = origin.pull(pull_branch, kill_after_timeout=_NETWORK_TIMEOUT_SECONDS)
     flags = [info.flags for info in result]
 
     return {
@@ -675,7 +697,7 @@ def git_fetch(remote: str = "origin", branch: Optional[str] = None, prune: bool 
     repo = GitRepoClient.for_path(repo_path)
     remote_obj = repo.remote(remote)
 
-    kwargs = {}
+    kwargs = {"kill_after_timeout": _NETWORK_TIMEOUT_SECONDS}
     if prune:
         kwargs["prune"] = True
 
@@ -730,7 +752,7 @@ def git_post_merge_cleanup(
     origin = repo.remotes.origin
 
     repo.git.checkout(main_branch)
-    origin.pull(main_branch)
+    origin.pull(main_branch, kill_after_timeout=_NETWORK_TIMEOUT_SECONDS)
 
     branch_deleted = False
     branch_delete_error = None
@@ -745,7 +767,7 @@ def git_post_merge_cleanup(
             except GitCommandError as exc:
                 branch_delete_error = str(exc)[:300]
 
-    origin.fetch(prune=True)
+    origin.fetch(prune=True, kill_after_timeout=_NETWORK_TIMEOUT_SECONDS)
 
     result = {
         "repo_path": str(repo.working_dir),
