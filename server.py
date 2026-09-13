@@ -23,6 +23,8 @@ ALWAYS pass repo_path as an absolute path whenever multiple checkouts of
 the repo could exist concurrently.
 """
 
+import contextvars
+import functools
 import os
 import sys
 from pathlib import Path
@@ -95,8 +97,67 @@ def _network_timeout_kwargs() -> dict:
     return {"kill_after_timeout": _NETWORK_TIMEOUT_SECONDS}
 
 
+_OPENED_REPOS = contextvars.ContextVar("git_ops_opened_repos", default=None)
+
+
+def _open_repo(repo_path: str = "."):
+    """Open a ``git.Repo`` for ``repo_path`` and register it for closing.
+
+    Every tool opens its repository through this helper rather than calling
+    ``GitRepoClient.for_path`` directly. Inside a tool call the Repo is recorded
+    so :func:`_closes_opened_repos` closes it when the call ends. An unclosed
+    Repo keeps GitPython's ``git cat-file`` helper processes and its ``.git``
+    handles alive; in this long-lived server on Windows that leaks processes and
+    locks the working tree until the server exits (#19). Outside a tool call the
+    Repo is returned untracked and the caller owns closing it.
+
+    Args:
+        repo_path: Repository path, resolved as documented on GitRepoClient.
+
+    Returns:
+        A ``git.Repo`` instance.
+    """
+    repo = GitRepoClient.for_path(repo_path)
+    opened = _OPENED_REPOS.get()
+    if opened is not None:
+        opened.append(repo)
+    return repo
+
+
+def _closes_opened_repos(fn):
+    """Wrap a tool so every Repo it opened is closed when it returns or raises.
+
+    Args:
+        fn: The tool function, already wrapped by ``mcp_tool_handler``.
+
+    Returns:
+        A wrapper with the same signature that closes the repositories the call
+        opened through :func:`_open_repo`. Its ``__wrapped__`` points at the
+        undecorated tool body (the same object ``mcp_tool_handler`` exposed
+        before this wrapper existed), so tests that call ``tool.__wrapped__`` to
+        observe raw exceptions keep that contract.
+    """
+
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        """Run the tool with a fresh open-repo registry, then close each entry."""
+        token = _OPENED_REPOS.set([])
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            for repo in _OPENED_REPOS.get():
+                try:
+                    repo.close()
+                except Exception as exc:
+                    print(f"git-ops: failed to close repository handle: {exc}", file=sys.stderr)
+            _OPENED_REPOS.reset(token)
+
+    wrapper.__wrapped__ = getattr(fn, "__wrapped__", fn)
+    return wrapper
+
+
 def _tool(read_only=False, destructive=True, idempotent=False, open_world=True):
-    """Register a tool with explicit MCP ToolAnnotations.
+    """Register a tool with explicit MCP ToolAnnotations and repository cleanup.
 
     The MCP specification's per-hint defaults are readOnlyHint=false,
     destructiveHint=true, idempotentHint=false and openWorldHint=true -- every
@@ -104,6 +165,9 @@ def _tool(read_only=False, destructive=True, idempotent=False, open_world=True):
     indistinguishable from an explicit worst-case declaration. Every tool on
     this server declares its four hints explicitly so a host's auto-approval and
     automatic-retry decisions rest on a stated property rather than an omission.
+
+    Every tool registered here is also wrapped by :func:`_closes_opened_repos`,
+    so the repositories it opens are closed when the call ends (#19).
 
     Args:
         read_only: True when the tool has no side effects at all.
@@ -113,21 +177,28 @@ def _tool(read_only=False, destructive=True, idempotent=False, open_world=True):
         open_world: True when the tool reaches a remote (network) system.
 
     Returns:
-        The decorator returned by the underlying MCP tool registration.
+        A decorator that wraps the tool with repository cleanup and registers it.
     """
     if ToolAnnotations is None:
-        return mcp.tool()
-    try:
-        return mcp.tool(
-            annotations=ToolAnnotations(
-                readOnlyHint=read_only,
-                destructiveHint=destructive,
-                idempotentHint=idempotent,
-                openWorldHint=open_world,
+        register = mcp.tool()
+    else:
+        try:
+            register = mcp.tool(
+                annotations=ToolAnnotations(
+                    readOnlyHint=read_only,
+                    destructiveHint=destructive,
+                    idempotentHint=idempotent,
+                    openWorldHint=open_world,
+                )
             )
-        )
-    except TypeError:  # pragma: no cover - older mcp without annotations kwarg
-        return mcp.tool()
+        except TypeError:  # pragma: no cover - older mcp without annotations kwarg
+            register = mcp.tool()
+
+    def decorator(fn):
+        """Wrap ``fn`` with repository cleanup, then register it with MCP."""
+        return register(_closes_opened_repos(fn))
+
+    return decorator
 
 
 def _safe_ref(value: str, field_name: str) -> str:
@@ -170,7 +241,7 @@ def _safe_ref(value: str, field_name: str) -> str:
 @mcp_tool_handler
 def git_status(repo_path: str = ".") -> dict:
     """Get repository status (modified, staged, untracked files)."""
-    repo = GitRepoClient.for_path(repo_path)
+    repo = _open_repo(repo_path)
     changed = [item.a_path for item in repo.index.diff(None)]
     try:
         staged = [item.a_path for item in repo.index.diff("HEAD")]
@@ -221,7 +292,7 @@ def git_branch_create(name: str, from_branch: str = "main", repo_path: str = "."
     """
     name = _safe_ref(name, "name")
     from_branch = _safe_ref(from_branch, "from_branch")
-    repo = GitRepoClient.for_path(repo_path)
+    repo = _open_repo(repo_path)
     origin = repo.remotes.origin
 
     had_stash = False
@@ -283,7 +354,7 @@ def git_branch_switch(name: str, repo_path: str = ".") -> dict:
     module docstring WARNING.
     """
     name = _safe_ref(name, "name")
-    repo = GitRepoClient.for_path(repo_path)
+    repo = _open_repo(repo_path)
     repo.git.checkout(name)
     return {"repo_path": str(repo.working_dir), "branch": name}
 
@@ -292,7 +363,7 @@ def git_branch_switch(name: str, repo_path: str = ".") -> dict:
 @mcp_tool_handler
 def git_branch_list(repo_path: str = ".") -> dict:
     """List all local and remote branches."""
-    repo = GitRepoClient.for_path(repo_path)
+    repo = _open_repo(repo_path)
     local = [str(b) for b in repo.branches]
     current = str(repo.active_branch)
     remote = []
@@ -322,7 +393,7 @@ def git_branch_delete(name: str, force: bool = False, repo_path: str = ".") -> d
         repo_path: Repository path.
     """
     name = _safe_ref(name, "name")
-    repo = GitRepoClient.for_path(repo_path)
+    repo = _open_repo(repo_path)
     flag = "-D" if force else "-d"
     repo.git.branch(flag, name)
     return {"repo_path": str(repo.working_dir), "deleted": name, "force": force}
@@ -342,7 +413,7 @@ def git_commit(message: str, files: Optional[str] = None, repo_path: str = ".") 
             commits against the wrong working directory. See module
             docstring WARNING.
     """
-    repo = GitRepoClient.for_path(repo_path)
+    repo = _open_repo(repo_path)
     staged_all_changes = not files
 
     # Stage files. Uses the `git add` porcelain command (repo.git.add), not
@@ -425,7 +496,7 @@ def git_push(
     """
     if branch is not None:
         branch = _safe_ref(branch, "branch")
-    repo = GitRepoClient.for_path(repo_path)
+    repo = _open_repo(repo_path)
     origin = repo.remotes.origin
     push_branch = branch or str(repo.active_branch)
 
@@ -452,7 +523,7 @@ def git_pull(branch: Optional[str] = None, repo_path: str = ".") -> dict:
     """Pull latest changes from remote origin."""
     if branch is not None:
         branch = _safe_ref(branch, "branch")
-    repo = GitRepoClient.for_path(repo_path)
+    repo = _open_repo(repo_path)
     origin = repo.remotes.origin
     pull_branch = branch or str(repo.active_branch)
 
@@ -530,7 +601,7 @@ def git_merge(
     if squash and not message:
         raise ValueError("message is required when squash=True")
 
-    repo = GitRepoClient.for_path(repo_path)
+    repo = _open_repo(repo_path)
     target_branch = str(repo.active_branch)
 
     if squash:
@@ -603,7 +674,7 @@ def git_diff(
         from_ref = _safe_ref(from_ref, "from_ref")
     if commit:
         commit = _safe_ref(commit, "commit")
-    repo = GitRepoClient.for_path(repo_path)
+    repo = _open_repo(repo_path)
 
     target_args = _diff_target_args(commit, from_ref, staged)
     diff_summary = repo.git.diff(*target_args, "--stat")
@@ -634,7 +705,7 @@ def git_stash(action: str = "push", message: Optional[str] = None, repo_path: st
         message: Stash message (only for push)
         repo_path: Repository path
     """
-    repo = GitRepoClient.for_path(repo_path)
+    repo = _open_repo(repo_path)
 
     if action == "push":
         args = ["push", "--include-untracked"]
@@ -677,7 +748,7 @@ def git_log(count: int = 10, repo_path: str = ".") -> dict:
         count: Number of commits to show (default: 10)
         repo_path: Repository path
     """
-    repo = GitRepoClient.for_path(repo_path)
+    repo = _open_repo(repo_path)
     commits = []
     for commit in repo.iter_commits(max_count=count):
         commits.append({
@@ -709,7 +780,7 @@ def git_fetch(remote: str = "origin", branch: Optional[str] = None, prune: bool 
     remote = _safe_ref(remote, "remote")
     if branch is not None:
         branch = _safe_ref(branch, "branch")
-    repo = GitRepoClient.for_path(repo_path)
+    repo = _open_repo(repo_path)
     remote_obj = repo.remote(remote)
 
     kwargs = _network_timeout_kwargs()
@@ -763,7 +834,7 @@ def git_post_merge_cleanup(
     """
     merged_branch = _safe_ref(merged_branch, "merged_branch")
     main_branch = _safe_ref(main_branch, "main_branch")
-    repo = GitRepoClient.for_path(repo_path)
+    repo = _open_repo(repo_path)
     origin = repo.remotes.origin
 
     repo.git.checkout(main_branch)
@@ -803,7 +874,7 @@ def git_post_merge_cleanup(
 @mcp_tool_handler
 def git_get_origin_url(repo_path: str = ".") -> dict:
     """Get the remote origin URL of the repository."""
-    repo = GitRepoClient.for_path(repo_path)
+    repo = _open_repo(repo_path)
     url = repo.remotes.origin.url
     return {
         "repo_path": str(repo.working_dir),
