@@ -99,6 +99,7 @@ Optional configuration you may add to the `env` block in `settings.json`:
 |----------|---------|-------------|
 | `GIT_DEFAULT_BRANCH` | — | **NOT IMPLEMENTED — read by nothing.** This row previously claimed it would *"override the default base branch name used when `from_branch` is not specified"*. No code consults it: `git_branch_create` declares `from_branch: str = "main"` as a hard-coded literal. On a repository whose base branch is `master`, setting this changes nothing and branch creation still tries to fetch a `main` that does not exist. Pass `from_branch` explicitly. |
 | `GIT_INSTALL_ROOT` | — | Optional. Consulted by `hook_shell_fix.py` (called at import time) when locating the git executable: PATH first, then this, then standard install locations. Useful on Windows when git is not on PATH. |
+| `GIT_OPS_HOOK_TIMEOUT` | `600` | Windows only. Seconds a commit hook (e.g. a pre-commit framework hook) may run before `hook_shell_fix.py` kills its whole process tree with `taskkill /T /F`; `git_commit` then returns a `HookExecutionError` instead of hanging the server. `0` disables the watchdog; a non-numeric value falls back to the default. Hooks also always run with stdin set to `DEVNULL`, so they can no longer block on (or consume) the MCP stdio pipe (#18). |
 
 No tokens or credentials are required. The server uses the Git credential store already configured on the host machine (SSH keys, credential helpers, or HTTPS tokens stored by `git config`).
 

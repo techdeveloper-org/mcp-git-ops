@@ -54,6 +54,11 @@ Run via `python server.py` — communicates over stdio using the MCP protocol.
 
 - `GIT_REPO_PATH` — Path to git repository root (default: CWD)
 - `GIT_DEFAULT_BRANCH` — Default branch name (default: main)
+- `GIT_OPS_HOOK_TIMEOUT` — Windows: seconds a commit hook may run before its process tree is killed (default: 600, `0` disables)
+
+## Commit Hooks on Windows (hook_shell_fix.py)
+
+`server.py` calls `hook_shell_fix.apply()` at import. It patches GitPython's single hook spawn site (`git.index.fun.safer_popen`) so hooks run with Git's bash by absolute path (not the System32 WSL stub), with `stdin=DEVNULL` (never the MCP stdio pipe, #18), and under a `taskkill /T` watchdog. Do not pass GitPython's `kill_after_timeout` on Windows — it raises there (see commit 7d16aa0).
 
 ---
 
