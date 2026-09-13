@@ -416,6 +416,47 @@ def git_commit(message: str, files: Optional[str] = None, repo_path: str = ".") 
     repo = _open_repo(repo_path)
     staged_all_changes = not files
 
+    # A merge in progress changes what a commit MEANS, so it is handled before
+    # anything touches the index (#20). Two independent hazards, both silent:
+    #
+    #   1. The `repo.git.reset("HEAD", "--")` below, which exists to make
+    #      `files` exclusive rather than additive, discards everything the
+    #      merge staged along with the merge state itself. git refuses this
+    #      case outright -- "fatal: cannot do a partial commit during a
+    #      merge" -- and so does this tool now, rather than producing a commit
+    #      git would not have made.
+    #   2. repo.index.commit() defaults parent_commits to HEAD alone and never
+    #      consults MERGE_HEAD, so even a full-index commit during a merge
+    #      records ONE parent and loses the merge relationship, leaving
+    #      MERGE_HEAD behind so the repo still believes it is merging.
+    #
+    # Observed live: a merge of 18 files committed as a single-parent commit
+    # containing 1 file, with the other 17 left as working-tree modifications
+    # and no error anywhere. The full-index path therefore delegates to git
+    # porcelain, which records both parents and clears the merge state.
+    merge_head = Path(repo.git_dir) / "MERGE_HEAD"
+    if merge_head.is_file():
+        if files:
+            raise ValueError(
+                "cannot do a partial commit during a merge: MERGE_HEAD is present in "
+                f"{repo.git_dir}, so committing only {files!r} would discard the rest of "
+                "the merge and record no second parent. Commit without `files` to "
+                "complete the merge, or abort it first."
+            )
+        repo.git.add("-A")
+        repo.git.commit("-m", message)
+        commit = repo.head.commit
+        return {
+            "repo_path": str(repo.working_dir),
+            "commit_hash": str(commit.hexsha)[:7],
+            "message": message,
+            "author": str(commit.author),
+            "files_committed": sorted(commit.stats.files.keys()),
+            "staged_all_changes": True,
+            "merge_commit": True,
+            "parents": [str(parent.hexsha)[:7] for parent in commit.parents],
+        }
+
     # Stage files. Uses the `git add` porcelain command (repo.git.add), not
     # IndexFile.add() -- the low-level index API ignores .gitignore (it will
     # happily stage an untracked __pycache__/*.pyc that git add would skip)
