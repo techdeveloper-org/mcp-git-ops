@@ -368,7 +368,7 @@ write that GitHub accepts and processes, but whose response is slow past the
 creating the resource a second time.
 
 This was observed, not theorised: a single ``create_issue`` call produced issues
-#256 and #257 on techdeveloper-org/claude-workflow-engine, identical in title
+#256 and #257 on techdeveloper-org/ai-native-sdlc-engine, identical in title
 and labels, 42 seconds apart, with the open-issue count verified as zero
 immediately beforehand. Retrying a non-idempotent write cannot be made safe
 without a server-side idempotency key, which the GitHub REST API does not offer

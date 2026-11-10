@@ -219,7 +219,7 @@ Response:
 
 > **Standalone.** This server has no runtime dependency on any other project. It speaks MCP over stdio and works with any MCP client.
 
-One such client is the [claude-workflow-engine](https://github.com/techdeveloper-org/claude-workflow-engine) LangGraph pipeline, which uses this server among 13 others. Nothing below is required to use the tools on their own. It is called at two specific pipeline steps:
+One such client is the [ai-native-sdlc-engine](https://github.com/techdeveloper-org/ai-native-sdlc-engine) LangGraph pipeline, which uses this server among 13 others. Nothing below is required to use the tools on their own. It is called at two specific pipeline steps:
 
 **Step 9 — Branch Creation**
 
@@ -281,7 +281,7 @@ Pull request titles should follow the format: `feat(git-ops): <short description
 
 | Repository | Purpose |
 |------------|---------|
-| [claude-workflow-engine](https://github.com/techdeveloper-org/claude-workflow-engine) | One consumer of this server — a LangGraph orchestration pipeline. Not required. |
+| [ai-native-sdlc-engine](https://github.com/techdeveloper-org/ai-native-sdlc-engine) | One consumer of this server — a LangGraph orchestration pipeline. Not required. |
 | [mcp-base](https://github.com/techdeveloper-org/mcp-base) | Shared base library (MCPResponse, @mcp_tool_handler, AtomicJsonStore) |
 | [mcp-github-api](https://github.com/techdeveloper-org/mcp-github-api) | GitHub PR, issue, merge, and label operations |
 | [mcp-session-mgr](https://github.com/techdeveloper-org/mcp-session-mgr) | Session lifecycle and context persistence |
